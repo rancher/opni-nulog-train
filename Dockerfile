@@ -1,7 +1,6 @@
 FROM python:3.7-slim
 COPY ./nulog-train/ /app/
 COPY ./models/nulog/ /app/
-COPY ./opni-nats-wrapper/nats_wrapper.py /app/nats_wrapper.py
 RUN chmod a+rwx -R /app
 WORKDIR /app
 

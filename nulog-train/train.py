@@ -9,8 +9,8 @@ import shutil
 import boto3
 import botocore
 from botocore.client import Config
-from nats_wrapper import NatsWrapper
 from NuLogParser import LogParser
+from opni_nats import NatsWrapper
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(message)s")
 
@@ -103,6 +103,4 @@ if __name__ == "__main__":
         loop.run_until_complete(send_signal_inference_coroutine)
         loop.close()
     except Exception as e:
-        logging.info(
-            "Cannot train Nulog model right now. Received exception {}".format(e)
-        )
+        logging.info(f"Cannot train Nulog model right now. Received exception {e}")
