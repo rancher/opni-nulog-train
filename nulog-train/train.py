@@ -54,13 +54,15 @@ async def send_signal_to_inference(loop):
         },
     }
     encoded_nulog_json = json.dumps(nulog_payload).encode()
-    await nw.connect()
-    nw.add_signal_handler(loop)
     await nw.publish(nats_subject="model_ready", payload_df=encoded_nulog_json)
     logging.info(
         "Published to model_ready Nats subject that new Nulog model is ready to be used for inferencing."
     )
-    await nw.nc.close()
+
+
+async def init_nats():
+    logging.info("Attempting to connect to NATS")
+    await nw.connect()
 
 
 if __name__ == "__main__":
@@ -100,6 +102,8 @@ if __name__ == "__main__":
         logging.info("Model completed training")
         loop = asyncio.get_event_loop()
         send_signal_inference_coroutine = send_signal_to_inference(loop)
+        task = loop.create_task(init_nats())
+        loop.run_until_complete(task)
         loop.run_until_complete(send_signal_inference_coroutine)
         loop.close()
     except Exception as e:
