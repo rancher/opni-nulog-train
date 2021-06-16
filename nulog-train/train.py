@@ -105,6 +105,9 @@ if __name__ == "__main__":
         task = loop.create_task(init_nats())
         loop.run_until_complete(task)
         loop.run_until_complete(send_signal_inference_coroutine)
-        loop.close()
+        try:
+            loop.run_forever()
+        finally:
+            loop.close()
     except Exception as e:
         logging.info(f"Cannot train Nulog model right now. Received exception {e}")
