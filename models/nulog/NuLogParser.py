@@ -151,6 +151,7 @@ class LogParser:
         )
         ## train if no model
         model.train()
+        last_anomaly_percentage = 1.01
         logging.info(f"#######Training Model for at most {self.nr_epochs} epochs...######")
         for epoch in range(self.nr_epochs):
             logging.info(f"Epoch: {epoch}")
@@ -160,7 +161,10 @@ class LogParser:
                 SimpleLossCompute(model.generator, criterion, model_opt),
             )
             current_anomaly_predicted_percentage = self.evaluate_model(data_tokenized_val)
-            if current_anomaly_predicted_percentage <= 0.05:
+            logging.info(f"In epoch {epoch}, predicted {current_anomaly_predicted_percentage * 100}% of validation dataset as an anomaly")
+            if current_anomaly_predicted_percentage < last_anomaly_percentage :
+                last_anomaly_percentage = current_anomaly_predicted_percentage
+            else:
                 break
 
         self.save_model(model=model, model_opt=model_opt, epoch=self.nr_epochs, loss=0)
