@@ -21,13 +21,14 @@ MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
 
 
 async def train_nulog_model(minio_client, windows_folder_path):
-    nr_epochs = 2
+    nr_epochs = 10
     num_samples = 0
     parser = LogParser()
-    texts = parser.load_data(windows_folder_path)
-    tokenized = parser.tokenize_data(texts, isTrain=True)
+    train_texts, validation_texts = parser.load_data(windows_folder_path)
+    train_tokenized = parser.tokenize_data(train_texts, isTrain=True)
+    validation_tokenized = parser.tokenize_data(validation_texts, isTrain=False)
     parser.tokenizer.save_vocab()
-    parser.train(tokenized, nr_epochs=nr_epochs, num_samples=num_samples)
+    parser.train(train_tokenized,validation_tokenized, nr_epochs=nr_epochs, num_samples=num_samples)
     all_files = os.listdir("output/")
     if "nulog_model_latest.pt" in all_files and "vocab.txt" in all_files:
         logging.info("Completed training model")

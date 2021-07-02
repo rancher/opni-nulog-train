@@ -71,9 +71,26 @@ class LogParser:
             logging.warning("loading trained model with old format.")
             model.load_state_dict(ckpt)
 
+    def evaluate_model(self, validation_data_tokenized, validation_nulog_threshold=0.97):
+        self.init_inference(not_training_validation=False)
+        validation_data_predictions = []
+        output = []
+        for val_log_tokens in validation_data_tokenized:
+            pred = (self.predict(val_log_tokens))[0]
+            if pred > validation_nulog_threshold:
+                validation_data_predictions.append(1)
+            else:
+                validation_data_predictions.append(0)
+        num_anomalies_predicted = sum(validation_data_predictions)
+        anomaly_predicted_percentage = num_anomalies_predicted / len(validation_data_predictions)
+        logging.info(f"The newly trained model predicted {num_anomalies_predicted} within the validation dataset.")
+        return anomaly_predicted_percentage
+
+
     def train(
         self,
-        data_tokenized,
+        data_tokenized_train,
+        data_tokenized_val,
         batch_size=32,
         mask_percentage=1.0,
         pad_len=64,
@@ -130,11 +147,12 @@ class LogParser:
             prev_epoch, prev_loss = self.load_model(model, model_opt)
 
         train_dataloader = self.get_train_dataloaders(
-            data_tokenized, transform_to_tensor
+            data_tokenized_train, transform_to_tensor
         )
         ## train if no model
         model.train()
-        logging.info(f"#######Training Model within {self.nr_epochs} epochs...######")
+        last_anomaly_percentage = 1.01
+        logging.info(f"#######Training Model for at most {self.nr_epochs} epochs...######")
         for epoch in range(self.nr_epochs):
             logging.info(f"Epoch: {epoch}")
             self.run_epoch(
@@ -142,6 +160,12 @@ class LogParser:
                 model,
                 SimpleLossCompute(model.generator, criterion, model_opt),
             )
+            current_anomaly_predicted_percentage = self.evaluate_model(data_tokenized_val)
+            logging.info(f"In epoch {epoch}, predicted {current_anomaly_predicted_percentage * 100}% of validation dataset as an anomaly")
+            if current_anomaly_predicted_percentage < last_anomaly_percentage :
+                last_anomaly_percentage = current_anomaly_predicted_percentage
+            else:
+                break
 
         self.save_model(model=model, model_opt=model_opt, epoch=self.nr_epochs, loss=0)
         # torch.save(model.state_dict(), "nulog_model_latest.pt")
@@ -160,6 +184,7 @@ class LogParser:
         nr_epochs=5,
         num_samples=0,
         step_size=100,
+        not_training_validation=True
     ):
         # training can share this init function
         self.mask_percentage = mask_percentage
@@ -188,8 +213,7 @@ class LogParser:
             dropout=self.dropout,
             max_len=self.pad_len,
         )
-
-        if using_GPU:
+        if not_training_validation and using_GPU:
             self.model.cuda()
         self.model_opt = torch.optim.Adam(
             self.model.parameters(),
@@ -267,12 +291,14 @@ class LogParser:
         )
         return test_dataloader
 
-    def load_data(self, windows_folder_path):
-        headers, regex = self.generate_logformat_regex(self.log_format)
+    def load_data(self, windows_folder_path, data_split=0.8):
         df_log = self.log_to_dataframe(
-            windows_folder_path, regex, headers, self.log_format
+            windows_folder_path
         )
-        return [df_log.iloc[i].Content for i in range(df_log.shape[0])]
+
+        all_data = [df_log.iloc[i].Content for i in range(df_log.shape[0])]
+        training_size = int(len(all_data) * data_split)
+        return all_data[:training_size], all_data[training_size:]
 
     def tokenize_data(self, input_text, isTrain=False):
         data_tokenized = []
@@ -282,7 +308,7 @@ class LogParser:
             data_tokenized.append(tokenized)
         return data_tokenized
 
-    def log_to_dataframe(self, windows_folder_path, regex, headers, logformat):
+    def log_to_dataframe(self, windows_folder_path):
         """Function to transform log file to dataframe"""
         all_log_messages = []
         json_files = sorted(
@@ -294,36 +320,12 @@ class LogParser:
             window_df = pd.read_json(
                 os.path.join(windows_folder_path, window_file), lines=True
             )
-            masked_log_messages = window_df["masked_log"].tolist()
-            regex_log_messages = []
-            for masked_message in masked_log_messages:
-                try:
-                    match = regex.search(masked_message)
-                    message = [match.group(header) for header in headers]
-                    regex_log_messages.append(message)
-                except Exception as e:
-                    pass
-            all_log_messages.extend(regex_log_messages)
-        logdf = pd.DataFrame(all_log_messages, columns=headers)
+            for idx, value in window_df["masked_log"].items():
+                all_log_messages.append(value)
+        logdf = pd.DataFrame(all_log_messages, columns=["Content"])
         logdf.insert(0, "LineId", None)
         logdf["LineId"] = [i + 1 for i in range(len(all_log_messages))]
         return logdf
-
-    def generate_logformat_regex(self, logformat):
-        """Function to generate regular expression to split log messages"""
-        headers = []
-        splitters = re.split(r"(<[^<>]+>)", logformat)
-        regex = ""
-        for k in range(len(splitters)):
-            if k % 2 == 0:
-                splitter = re.sub(" +", "\\\\s+", splitters[k])
-                regex += splitter
-            else:
-                header = splitters[k].strip("<").strip(">")
-                regex += "(?P<%s>.*?)" % header
-                headers.append(header)
-        regex = re.compile("^" + regex + "$")
-        return headers, regex
 
     def do_mask(self, batch):
         c = copy.deepcopy
