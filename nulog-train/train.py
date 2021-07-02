@@ -19,8 +19,10 @@ MINIO_SERVER_URL = os.environ["MINIO_SERVER_URL"]
 MINIO_ACCESS_KEY = os.environ["MINIO_ACCESS_KEY"]
 MINIO_SECRET_KEY = os.environ["MINIO_SECRET_KEY"]
 
+nw = NatsWrapper()
 
-async def train_nulog_model(minio_client, windows_folder_path):
+
+def train_nulog_model(minio_client, windows_folder_path):
     nr_epochs = 10
     num_samples = 0
     parser = LogParser()
@@ -28,7 +30,12 @@ async def train_nulog_model(minio_client, windows_folder_path):
     train_tokenized = parser.tokenize_data(train_texts, isTrain=True)
     validation_tokenized = parser.tokenize_data(validation_texts, isTrain=False)
     parser.tokenizer.save_vocab()
-    parser.train(train_tokenized,validation_tokenized, nr_epochs=nr_epochs, num_samples=num_samples)
+    parser.train(
+        train_tokenized,
+        validation_tokenized,
+        nr_epochs=nr_epochs,
+        num_samples=num_samples,
+    )
     all_files = os.listdir("output/")
     if "nulog_model_latest.pt" in all_files and "vocab.txt" in all_files:
         logging.info("Completed training model")
@@ -39,13 +46,16 @@ async def train_nulog_model(minio_client, windows_folder_path):
             "output/vocab.txt", "nulog-models", "vocab.txt"
         )
         logging.info("Nulog model and vocab have been uploaded to Minio.")
+        os.remove("output/nulog_model_latest.pt")
+        os.remove("output/vocab.txt")
+
     else:
         logging.info("Nulog model was not able to be trained and saved successfully.")
         return False
     return True
 
 
-async def minio_setup_and_download_data(minio_client):
+def minio_setup_and_download_data(minio_client):
     try:
         minio_client.meta.client.download_file(
             "training-logs", "windows.tar.gz", "windows.tar.gz"
@@ -74,7 +84,7 @@ async def minio_setup_and_download_data(minio_client):
 
 
 async def send_signal_to_nats():
-    nw = NatsWrapper()
+
     nulog_payload = {
         "bucket": "nulog-models",
         "bucket_files": {
@@ -83,17 +93,19 @@ async def send_signal_to_nats():
         },
     }
     encoded_nulog_json = json.dumps(nulog_payload).encode()
-    await nw.connect()
     await nw.publish(nats_subject="model_ready", payload_df=encoded_nulog_json)
     logging.info(
         "Published to model_ready Nats subject that new Nulog model is ready to be used for inferencing."
     )
-    await nw.nc.close()
 
 
-def main():
-    loop = asyncio.get_event_loop()
+async def consume_signal(job_queue):
+    await nw.subscribe(
+        nats_subject="gpu_service_training_internal", payload_queue=job_queue
+    )
 
+
+async def train_model(job_queue):
     minio_client = boto3.resource(
         "s3",
         endpoint_url=MINIO_SERVER_URL,
@@ -102,18 +114,36 @@ def main():
         config=Config(signature_version="s3v4"),
     )
 
-    setup_task = loop.create_task(minio_setup_and_download_data(minio_client))
-    if not loop.run_until_complete(setup_task):
-        return
+    windows_folder_path = "windows/"
 
-    train_task = loop.create_task(train_nulog_model(minio_client, "windows/"))
-    if not loop.run_until_complete(train_task):
-        return
+    while True:
+        new_job = await job_queue.get()
 
-    nats_signal_task = loop.create_task(send_signal_to_nats())
-    loop.run_until_complete(nats_signal_task)
+        res_download_data = minio_setup_and_download_data(minio_client)
+        res_train_model = train_nulog_model(minio_client, windows_folder_path)
+        await send_signal_to_nats()
 
-    loop.close()
+
+async def init_nats():
+    logging.info("Attempting to connect to NATS")
+    await nw.connect()
+
+
+def main():
+    loop = asyncio.get_event_loop()
+    job_queue = asyncio.Queue(loop=loop)
+
+    consumer_coroutine = consume_signal(job_queue)
+    training_coroutine = train_model(job_queue)
+
+    task = loop.create_task(init_nats())
+    loop.run_until_complete(task)
+
+    loop.run_until_complete(asyncio.gather(training_coroutine, consumer_coroutine))
+    try:
+        loop.run_forever()
+    finally:
+        loop.close()
 
 
 if __name__ == "__main__":
