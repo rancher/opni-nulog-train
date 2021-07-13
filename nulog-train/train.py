@@ -85,6 +85,10 @@ def minio_setup_and_download_data(minio_client):
 
 async def send_signal_to_nats():
 
+    await nw.publish(
+        "gpu_trainingjob_status", b"JobEnd"
+    )  ## tells the GPU service that a training job done.
+
     nulog_payload = {
         "bucket": "nulog-models",
         "bucket_files": {
@@ -92,8 +96,9 @@ async def send_signal_to_nats():
             "vocab_file": "vocab.txt",
         },
     }
-    encoded_nulog_json = json.dumps(nulog_payload).encode()
-    await nw.publish(nats_subject="model_ready", payload_df=encoded_nulog_json)
+    await nw.publish(
+        nats_subject="model_ready", payload_df=json.dumps(nulog_payload).encode()
+    )
     logging.info(
         "Published to model_ready Nats subject that new Nulog model is ready to be used for inferencing."
     )
@@ -117,11 +122,13 @@ async def train_model(job_queue):
     windows_folder_path = "windows/"
 
     while True:
-        new_job = await job_queue.get()
+        new_job = await job_queue.get()  ## TODO: should the metadata being used?
 
         res_download_data = minio_setup_and_download_data(minio_client)
         res_train_model = train_nulog_model(minio_client, windows_folder_path)
-        await send_signal_to_nats()
+        if res_train_model:
+            await send_signal_to_nats()
+        ## TODO: what to do if model training ever failed?
 
 
 async def init_nats():
